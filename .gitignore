@@ -1,0 +1,58 @@
+# Environment variables and secrets
+
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Testing and coverage
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local development files
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
+
+# Local databases
+
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated benchmark results
+
+results/*.tmp
+results/*.log
+
+# Build artifacts
+
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+
+*.tmp
+*.bak
+*.swp
+*~
