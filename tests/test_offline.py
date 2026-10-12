@@ -5,10 +5,27 @@ import unittest
 
 from immunis.policy import Action, PolicyGate
 from immunis.provenance import ProvenanceStore
+from immunis.quarantine import (
+    ModelResponse,
+    QuarantineEngine,
+    QuarantineError,
+)
 from immunis.schemas import (
     ValidationError,
     parse_quarantine_json,
 )
+
+
+class FakeModel:
+    """Deterministic fake model with no network calls or API costs."""
+
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+        self.calls = 0
+
+    def analyze(self, source_id: str, content: str) -> ModelResponse:
+        self.calls += 1
+        return ModelResponse(self.response_text)
 
 
 class QuarantineSchemaTests(unittest.TestCase):
@@ -79,12 +96,14 @@ class QuarantineSchemaTests(unittest.TestCase):
 class ProvenanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = ProvenanceStore()
+
         self.store.add_source(
             source_id="source_1",
             kind="webpage",
             uri="https://evil.test/fixture",
             trust="untrusted",
         )
+
         self.store.add_fact(
             fact_id="fact_1",
             text="A claim from the webpage.",
@@ -93,6 +112,7 @@ class ProvenanceTests(unittest.TestCase):
             parent_ids=["source_1"],
             parent_type="source",
         )
+
         self.store.add_fact(
             fact_id="fact_2",
             text="A derived claim.",
@@ -107,6 +127,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_active_fact_is_retrievable(self) -> None:
         fact = self.store.get_fact("fact_1")
+
         self.assertIsNotNone(fact)
         self.assertEqual(fact["text"], "A claim from the webpage.")
 
@@ -148,7 +169,10 @@ class PolicyGateTests(unittest.TestCase):
 
     def test_unknown_tool_is_denied(self) -> None:
         decision = self.gate.evaluate(
-            Action(tool="send_money", args={"amount": 10}),
+            Action(
+                tool="send_money",
+                args={"amount": 10},
+            ),
             fact_trust={},
         )
 
@@ -192,6 +216,82 @@ class PolicyGateTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.status, "deny")
+
+
+class QuarantineEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = ProvenanceStore()
+
+        self.payload = {
+            "source_id": "quarantine_source",
+            "content_type": "webpage",
+            "summary": "A test webpage.",
+            "claims": [
+                {
+                    "text": "The page contains a test claim.",
+                    "kind": "fact",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+
+        self.model = FakeModel(json.dumps(self.payload))
+        self.engine = QuarantineEngine(self.model, self.store)
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_valid_content_is_processed_and_stored_as_untrusted(self) -> None:
+        result = self.engine.process(
+            source_id="quarantine_source",
+            content="A harmless fixture page.",
+        )
+
+        self.assertEqual(result.claim_count, 1)
+
+        fact = self.store.get_fact("quarantine_source_fact_1")
+
+        self.assertIsNotNone(fact)
+        self.assertEqual(fact["trust"], "untrusted")
+
+    def test_invalid_model_json_stores_no_facts(self) -> None:
+        model = FakeModel("not JSON")
+        engine = QuarantineEngine(model, self.store)
+
+        with self.assertRaises(QuarantineError):
+            engine.process("bad_source", "Fixture content.")
+
+        self.assertEqual(self.store.list_active_facts(), [])
+
+    def test_empty_content_is_rejected(self) -> None:
+        with self.assertRaises(QuarantineError):
+            self.engine.process("empty_source", "  ")
+
+        self.assertEqual(self.model.calls, 0)
+
+    def test_content_limit_is_enforced(self) -> None:
+        engine = QuarantineEngine(
+            self.model,
+            self.store,
+            max_content_chars=5,
+        )
+
+        with self.assertRaises(QuarantineError):
+            engine.process("large_source", "123456")
+
+        self.assertEqual(self.model.calls, 0)
+
+    def test_source_mismatch_fails_closed(self) -> None:
+        payload = dict(self.payload)
+        payload["source_id"] = "some_other_source"
+
+        model = FakeModel(json.dumps(payload))
+        engine = QuarantineEngine(model, self.store)
+
+        with self.assertRaises(QuarantineError):
+            engine.process("expected_source", "Fixture content.")
+
+        self.assertEqual(self.store.list_active_facts(), [])
 
 
 if __name__ == "__main__":
